@@ -1,0 +1,138 @@
+# python 2.7
+# license: GNU GPLv3
+# Proof of Concept Code
+# Notes:
+#
+# the tip number is the number at the end of a URL that corresponds to a threat bulletin
+# for example: https://REDACTED.com/REDACTED/8348   <--- that number there
+#
+
+
+import argparse
+import json
+import requests
+import sys
+
+
+
+# ---------------------------------------------------------------------
+# some constants
+
+BASE="https://REDACTED.com/REDACTED/REDACTED/v1/tipreport/"
+INTELLIGENCE="/REDACTED/intelligence/"
+
+
+my_params= {
+    "username"  : "",
+    "api_key"   : "",
+    "order_by"  : "created_ts",
+    "limit"     : 0,
+    "offset"    : 0 }
+
+
+
+# ---------------------------------------------------------------------
+# usage
+
+def usuage():
+  print("usage: python2.7 {} [-h] -u USERNAME -k API_KEY -t TIP_NUMBER".format(sys.argv[0]))
+  print("output file is called TIP<TIP_NUMBER>.txt")
+
+
+
+# ---------------------------------------------------------------------
+# parse dem args
+
+parser = argparse.ArgumentParser(description="get IOCs from ThreatBulletin")
+parser.add_argument('-u', dest='username', action='store', nargs=1, required=True, help="username")
+parser.add_argument('-k', dest='apikey', action='store', nargs=1, required=True, help="api key")
+parser.add_argument('-t', dest='tip', action='store', nargs=1, required=True, help="tip number")
+
+args, unknown = parser.parse_known_args()
+
+
+
+# ---------------------------------------------------------------------
+# some more constants
+
+API_URL=BASE+args.tip[0]+INTELLIGENCE
+my_params['username']=args.username[0]
+my_params['api_key']=args.apikey[0]
+
+
+
+# ---------------------------------------------------------------------
+# This gives us the number of IOCs associated (with the TIP) that
+# we use to generate a ceiling for maximum IOCs to be fetched.
+
+def numberOfIOCs(requestParams):
+  requestParams['limit']=1  # we are only interested in meta data so why get more than one?
+
+  totalCount=0
+  response = requests.get(API_URL, params=requestParams)
+  if str(response.status_code) != '200':
+    print("[!] http status: {}".format(response.status_code))
+  elif response.text is not None:
+    result=response.text.encode("utf-8")
+    result=json.loads(str(result))
+    totalCount=int(result['meta']['total_count'])
+    print("[*] There are possibly {} IOCs".format(totalCount))
+  else:
+    print("[!] None result at offset {}. Retrying at same offset".format(my_params['offset']))
+
+  return totalCount
+
+
+
+# ---------------------------------------------------------------------
+# get the raw json and evaluate it until the ceiling is reached
+# the ceiling is the total count given by numberOfIOCs()
+# we will also stop if for some reason we start getting an empty list but have not
+# reached the ceiling
+
+def get_all(ceiling, requestParams):
+  end_line="\n"
+  filename="TIP"+args.tip[0]+".txt"
+  fH=open(filename, 'a')
+  requestParams['limit']=400  # a decent sized chunk
+
+  while requestParams['offset'] < ceiling:
+    # write to file in chunks of calls to API made - comes last in this loop
+    file_data=''
+    print("[*] Getting next chunk from IOC {}".format(requestParams['offset']))
+    response = requests.get(API_URL, params=requestParams)
+    if str(response.status_code) != '200':
+      print("[!] retrying at {} due to http status: {}".format(requestParams['offset'],response.status_code))
+    elif response.text is not None:
+      result=response.text.encode("utf-8")
+      result=json.loads(str(result))
+      num_items_returned=(len(result['objects']))
+      requestParams['offset']+=num_items_returned   # adjust offset based on number of items returnd
+
+      # if there were no results returned then for some reason there was a difference between the expected ceiling and
+      # the number of actual returned results.
+      if len(result['objects']) == 0:
+        print("[!] Valid response returned, but no additional results. Download complete.")
+        requestParams['offset'] = ceiling
+      else:
+        for obj in result['objects']:
+          try:
+            if obj['value'] is not None:
+              Value=obj['value']
+            else:
+              Value=""
+          except:
+            Value=""
+
+          file_data+=Value+end_line
+
+    else:
+      print("[!] None result at offset {}. Retrying at same offset".format(requestParams['offset']))
+
+    fH.write(file_data)
+  fH.close()
+
+
+
+if __name__ == "__main__":
+  get_all(numberOfIOCs(my_params), my_params)
