@@ -1,0 +1,139 @@
+# George Nicol
+# python 2.7
+# license: GNU GPLv3
+# Proof of Concept Code - Anomali
+# Notes:
+#
+# Gets indicators only from the streams given, optionally by date included
+# date must be in format YYY-MM-DD
+# creates flat file of indicators from whatever feed is entered.
+# one per line
+# may get more than one feed per use
+
+import argparse
+import json
+import requests
+import datetime
+
+# ---------------------------------------------------------------------
+# some constants
+
+API_URL="https://api.threatstream.com/REDACTED/REDACTED/v2/REDACTED/"
+OUTFILE="feed_"    # see bottom for construction
+FILE_DATA=[]
+api_params= {
+    "username"  : "",
+		"api_key"   : "",
+    "feed_id"   : "",
+    "created_ts__gte" : "",
+    "order_by"  : "created_ts",
+    "limit"     : 0,
+    "offset"    : 0 }
+
+
+# ---------------------------------------------------------------------
+# parse dem args
+
+parser = argparse.ArgumentParser(description="get IOCs from feed")
+
+parser.add_argument("-c", dest = "creds", action = "store", nargs = 2, required = True, help = "username apikey")
+parser.add_argument("-f", dest = "feeds", action = "store", nargs = "*", required = True, help = "feed number(s)")
+parser.add_argument("-d", dest = "date", action = "store", nargs = 1,  help = "YYYY-MM-DD")
+
+args, unknown = parser.parse_known_args()
+
+
+
+# ---------------------------------------------------------------------
+# set up args for use in api params
+
+api_params['username'] = args.creds[0]
+api_params['api_key'] = args.creds[1]
+if args.date is not None:
+  api_params['created_ts__gte'] = args.date[0]+"T00:00:00.000Z"
+
+
+# ---------------------------------------------------------------------
+# This gives us the number of IOCs associated (with the feed) that
+# we use to generate a ceiling for maximum IOCs to be fetched.
+
+def numberOfIOCs(requestParams):
+  requestParams['limit']=1  # we are only interested in meta data so why get more than one?
+
+  totalCount=0
+  response = requests.get(API_URL, params=requestParams)
+  if str(response.status_code) != '200':
+    print("[!] http status: {}".format(response.status_code))
+  elif response.text is not None:
+    result=response.text.encode("utf-8")
+    result=json.loads(str(result))
+    totalCount=result['meta']['total_count']
+    print("[*] There are possibly {} IOCs for feed {}".format(totalCount, api_params['feed_id']))
+  else:
+    print("[!] None result at offset {}. Retrying at same offset".format(api_params['offset']))
+
+  return totalCount
+
+
+# ---------------------------------------------------------------------
+# get the raw json and evaluate it until the ceiling is reached
+# the ceiling is the total count given by numberOfIOCs()
+# we will also stop if for some reason we start getting an empty list but have not
+# reached the ceiling
+
+def get_all(ceiling, requestParams):
+  end_line="\n"
+  requestParams['limit'] = 400  # a decent sized chunk
+  requestParams['offset'] = 0   # reset to start over
+
+  while requestParams['offset'] < ceiling:
+    # write to file in chunks of calls to API made - comes last in this loop
+    print("[*] Getting next chunk from IOC {}".format(requestParams['offset']))
+    response = requests.get(API_URL, params=requestParams)
+    if str(response.status_code) != '200':
+      print("[!] retrying at {} due to http status: {}".format(requestParams['offset'],response.status_code))
+    elif response.text is not None:
+      result=response.text.encode("utf-8")
+      result=json.loads(str(result))
+      num_items_returned=(len(result['objects']))
+      requestParams['offset']+=num_items_returned   # adjust offset based on number of items returnd
+
+      # if there were no results returned then for some reason there was a difference between the expected ceiling and
+      # the number of actual returned results.
+      if len(result['objects']) == 0:
+        print("[!] Valid response returned, but no additional results. Download complete.")
+        requestParams['offset'] = ceiling
+      else:
+        for obj in result['objects']:
+          try:
+            if obj['value'] is not None:
+              Value=obj['value']
+            else:
+              Value=""
+          except:
+            Value=""
+
+          #file_data+=Value+end_line
+          if Value not in FILE_DATA:
+            FILE_DATA.append(Value)
+
+
+    else:
+      print("[!] None result at offset {}. Retrying at same offset".format(requestParams['offset']))
+
+
+
+if __name__ == "__main__":
+  for feedID in args.feeds:
+    OUTFILE+=feedID+"_"
+  OUTFILE+=str(datetime.date.today())+'.txt'
+
+  for feedID in args.feeds:
+    api_params['feed_id'] = feedID
+    get_all(numberOfIOCs(api_params), api_params)
+
+  FILE_DATA.sort()
+  with open(OUTFILE, 'a') as fH:
+    for line in FILE_DATA:
+      fH.write(line+"\n")
+  fH.close()
