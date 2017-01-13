@@ -1,0 +1,119 @@
+# George Nicol
+# January 2017
+# python 2.7
+# license: GNU GPLv3
+# Proof of Concept Code - Anomali
+# Notes: https 401 status means either your creds are bad or you aren't allowed to see the sig.
+#
+#
+# upload signatures to API
+# When uploading signatures to the API there are several key requirements:
+# 1) you are uploading a json object and the REQUIRED bits are:
+#   a) name - this is the name of the signature
+#   b) is_public - this is true or false. false indicates either private or trusted circle
+#   c) publication_status - new, pending_review, review_requested, reviewed, published
+#         must be in published to been seen outside your own or
+#   d) s_type - signature type (numeric)
+#       1 - snort, 2 - yara, 3 - CybOX, 4 - OpenIOC, 5 - ClamAV, 6 - Suricata, 7 - Bro,
+#       8 - Carbon Black Query, 9 - Custom
+#   e) notes - the signature itself in free form text
+# 2) There are OPTIONAL bits that MAY be added:
+#   a) tags - a list of tags associated with the signature
+#   b) circles - a list of TC ids to which this belongs ... only valid with "is_public" : false
+#   c) tlp - red, amber, white, green, or "" (empty value)
+#   d) intelligence - a list of IOCs assoiciated with the signature. This is
+#       the "id" field of a json object for a given IOC. IOC must be in TS6.0
+#
+# 3) Generally speaking it doesn't matter what order these appear in as long as the format below
+# is adhered to as a minimum:
+# {
+#     "name"                : "",
+#     "is_public"           : "",
+#     "publication_status"  : "",
+#     "s_type"              : "",
+#     "notes"               : ""
+# }
+#
+# reloading the same signature with the same name returns 200/201 but no change
+# You CAN edit to some degree the signature using POST. For Example, I changed the s_type,
+# added a tag, and changed the signature - while keeping the name the same. The signature
+# was updated with the new information but kept the same ID and same name. The API
+# guide does not indicate that this is valid but it works in my limited trials. YMMV.
+#
+#
+
+import requests
+import json
+import argparse
+import datetime
+
+#------------------------------------------------------
+# some constants
+
+API_URL = "https://api.threatstream.com/REDACTED/REDACTED/REDACTED/signature/"
+SUCCESS=["200", "201"]
+
+#------------------------------------------------------
+# parse dem args
+
+parser = argparse.ArgumentParser(description="add or fetch signature")
+useGroup = parser.add_mutually_exclusive_group(required=True)
+parser.add_argument("-c", dest = "creds", action = "store", nargs = 2, required = True, help = "username apikey")
+useGroup.add_argument("-f", dest = "path", action = "store", nargs = 1, help = "path to import file")
+useGroup.add_argument("-n", dest = "sigid", action = "store", nargs = 1, help = "id of signature to retrieve")
+
+
+args, unknown = parser.parse_known_args()
+
+auth_params = { "username":args.creds[0], "api_key":args.creds[1] }
+
+
+
+#---------------------------------------------
+# evaluate response code and display anything of interest
+
+def handleResponse(resp, name, post):
+  if str(resp.status_code) not in SUCCESS:
+    print("[!] https status: {}".format(resp.status_code))
+#    print("[*] head: {}".format(resp.headers))
+#    print("[*] text: {}".format(resp.text))
+  else:
+    if post == True:
+      result = resp.text.encode("utf-8")
+      result = json.loads(str(result))
+      print("[*] {} saved in ThreatStream as REDACTED/REDACTED/REDACTED/signature/{}".format(name, result['id']))
+    else:
+      print("{}".format(resp.text))
+
+
+
+
+#---------------------------------------------
+# using POST method, uploads a signature via API, this will also change a signture (see notes)
+
+def postSig(sig):
+  name = json.loads(sig)
+  name = name['name']
+  response = requests.post(API_URL, params=auth_params, data = sig, headers = { 'Content-Type' : 'application/json' } )
+  handleResponse(response, name, True)
+
+
+
+#---------------------------------------------
+# using GET method, retrieve a signature as a JSON object
+
+def getSig(api_url, sig):
+  api_url+=str(sig)+"/"
+  response = requests.get(api_url, params=auth_params)
+  handleResponse(response, 'xxx', False)
+
+
+if __name__ == "__main__":
+
+  if args.path is not None:
+    with open(args.path[0] , 'r') as fH:
+      signature = fH.read()
+    postSig(signature)
+  else:
+    signature = args.sigid[0]
+    getSig(API_URL, signature)
