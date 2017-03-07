@@ -145,7 +145,7 @@ def import_post(auth, api_url, data_params):
     print("[!] http status {} for import".format(result.status_code))
   else:
     text=json.loads(result.text)
-    print("Success: {} for import seesion id: {}".format(text['success'], text['import_session_id']))
+    print("Success: {} for import session id: {}".format(text['success'], text['import_session_id']))
 
 
 
