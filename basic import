@@ -1,0 +1,154 @@
+# George Nicol
+# python 2.7
+# March 2017
+# license: GNU GPLv3
+# Proof of Concept Code
+# version 1.0
+# Notes:
+#
+# Files required: 2
+#
+# - IOC attributes are the first file and they specify value, itype and tags as listed on page 10 of the API
+#   documentation. Format is csv with a header line. Order is relevant always for these attributes.
+#   Sample file:
+#   value,itype,tags
+#
+# - Global attributes specify details about the import session like source confidence weight, expiration
+#   timestamp, classification and so on. This is also called request attributes on page 8 and 9 of the API
+#   documentation. For the purposes of this script, order is relevant.
+#   Sample file:
+#
+#
+# Optional File: a .conf file for credentials.
+#
+# - The credentials are in clear text however
+#   which we strongly recommend against. With the option (-x) no credentials you don't have to enter your
+#   credentials on the command line, but the existence of yourcompany.conf in the same directory as the
+#   executable is required instead.
+#
+#   YOURCOMPANY.conf file holds username and api key in clear text, one per line as shown:
+#   user@YOURCOMPANY.com
+#   1234567890abcdef
+
+
+import argparse
+import json
+import requests
+import sys
+
+
+
+# ---------------------------------------------------------------------
+# some constants
+
+API_URL="https://api.threatstream.com/REDACTED/REDACTED/v1/REDACTED/"
+STATUSOK = [200, 202]
+
+AUTH_PARAMS= {
+    "username"  : "",
+		"api_key"    : "",
+    }
+
+
+# ---------------------------------------------------------------------
+# parse dem args
+
+parser = argparse.ArgumentParser(description="import IOCs from a file")
+credGroup=parser.add_mutually_exclusive_group(required=True)
+
+credGroup.add_argument('-x', action = 'store_true', help = "use YOURCOMPANY.conf")
+credGroup.add_argument('-c', dest = 'creds', action = 'store', nargs = 2, help = "username apikey")
+parser.add_argument('-f', dest = 'IOC_attributes', action = 'store', nargs = 1, required=True,  help = "/path/to/inidicators.txt")
+parser.add_argument('-g', dest = 'global_attributes', action = 'store', nargs = 1, required=True, help = "/path/to/global_attributes.txt")
+
+args, unknown = parser.parse_known_args()
+
+
+
+# ---------------------------------------------------------------------
+# set up credentials for use in auth
+
+if args.x == True:
+  try:
+    with open('YOURCOMPANY.conf', 'r') as f:
+      conf = f.read()
+    conf = conf.split()
+    AUTH_PARAMS['username'] = conf[0].strip()
+    AUTH_PARAMS['api_key'] = conf[1].strip()
+  except IOError:
+    print("[!] Problem with YOURCOMPANY.conf file.")
+    sys.exit()
+else:
+  AUTH_PARAMS['username'] = args.creds[0]
+  AUTH_PARAMS['api_key'] = args.creds[1]
+
+
+
+
+# ---------------------------------------------------------------------
+# As indicated in the API documentation, there are globabl attirbutes for importing IOCs
+# as well as attributes specific to the IOCs. The globabl attributes pertain more to the
+# settings for the batch import. In particular, source confidence weight specifies how
+# much the confidence of the import should be weighted. A setting of 100 indicates that
+# no machine learning should be employed, a source confidence of less than 30 means that
+# the specified confidence should be weighted at 30% and that ML should be weighted at 70%
+# when determining the final confdence value. Note the order of the attributes when
+# creating the global file.
+# See documentation for more detail.
+
+def make_global():
+  global_atts={}
+  try:
+    with open(args.global_attributes[0], 'r') as fH:
+      line = fH.read().strip()
+      values = line.split(',')
+      global_atts['confidence']=              values[0]
+      global_atts['severity']=                values[1]
+      global_atts['classification']=          values[2]
+      global_atts['expiration_ts']=           values[3]
+      global_atts['notes']=                   values[4]
+      global_atts['ip_mapping']=              values[5]
+      global_atts['domain_mapping']=          values[6]
+      global_atts['url_mapping']=             values[7]
+      global_atts['email_mapping']=           values[8]
+      global_atts['md5_mapping']=             values[9]
+      global_atts['source_confidence_weight']=values[10]
+      global_atts['trusted_circles']=         values[11]
+  except IOError:
+    print("[!] Problem with {}".format(args.global_attributes[0]))
+    sys.exit()
+  except IndexError:
+    print("[!] Insufficient columns in {}".format(args.global_attributes[0]))
+    sys.exit()
+
+  return global_atts
+
+
+
+
+# ---------------------------------------------------------------------
+# read the IOC attributes and make the request accordingly
+# the IOC attributes are the files portion, the global attirbutes are the data portion
+# and so on.
+
+def import_post(auth, api_url, data_params):
+  IOCs=''
+  try:
+    with open(args.IOC_attributes[0], 'r') as fH:
+      IOCs=fH.read()
+  except IOError:
+    print("[!] Problem with {}".format(args.IOC_attributes[0]))
+    sys.exit()
+  file_info = {'file': (args.IOC_attributes, IOCs)} 
+  result = requests.post(api_url, params=auth, data=data_params, files=file_info)
+  if result.status_code not in STATUSOK:
+    print("[!] http status {} for import".format(result.status_code))
+  else:
+    text=json.loads(result.text)
+    print("Success: {} for import seesion id: {}".format(text['success'], text['import_session_id']))
+
+
+
+if __name__ == "__main__":
+  import_post(AUTH_PARAMS, API_URL, make_global())
+
