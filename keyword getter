@@ -1,0 +1,224 @@
+# George Nicol
+# python 2.7
+# License: GNU GPLv3
+# Proof of Concept Code - Anomali
+# Note:
+
+# Basically acts as export to csv for keywords. You can get them all or provide an "all after" date
+# (which is inclusive of the date). Ordering is newest at the top of the list.
+
+
+import argparse
+import json
+import requests
+import datetime
+
+
+# ---------------------------------------------------------------------
+# some constants
+
+API_URL="https://api.threatstream.com/REDACTED/REDACTED/v1/REDACTED/keywordalertmatch/"
+OUTFILE="keywords_"+str(datetime.date.today())+".csv"
+api_params= {
+    "username"  : "",
+		"api_key"   : "",
+    "order_by"  : "-created_ts",
+#    "created_ts__gte" : "",
+    "limit"     : 0,
+    "offset"    : 0 }
+
+
+
+# ---------------------------------------------------------------------
+# used for arg parse
+def positive(string):
+  try:
+    value = int(string)
+    if (value > 0):
+      return value
+    else:
+      raise argparse.ArgumentTypeError
+  except:
+    msg = "[!] Maximum needs to be a positive integer"
+    raise argparse.ArgumentTypeError(msg)
+
+  return None
+
+# ---------------------------------------------------------------------
+# parse dem args
+
+parser = argparse.ArgumentParser(description="get keyword alerts")
+
+parser.add_argument("-c", dest = "creds", action = "store", nargs = 2, required = True, help = "username apikey")
+parser.add_argument("-d", dest = "date", action = "store", nargs = 1,  help = "YYYY-MM-DD")
+parser.add_argument("-m", dest = "maximum", action = "store", nargs = 1, type = positive, help = "maximum to retrieve")
+
+args, unknown = parser.parse_known_args()
+
+
+# ---------------------------------------------------------------------
+# set up args for use in api params
+
+
+api_params['username'] = args.creds[0]
+api_params['api_key'] = args.creds[1]
+if args.date is not None:
+  api_params['created_ts__gte'] = args.date[0]+"T00:00:00.000Z"
+
+
+
+# ---------------------------------------------------------------------
+# This gives us the number of associated items from which we generate
+# a ceiling to fetch
+
+def numberOfIOCs(requestParams):
+  requestParams['limit']=1  # we are only interested in meta data so why get more than one?
+
+  totalCount=0
+  response = requests.get(API_URL, params=requestParams)
+  if str(response.status_code) != '200':
+    print("[!] http status: {}".format(response.status_code))
+  elif response.text is not None:
+    result=response.text.encode("utf-8")
+    result=json.loads(str(result))
+    totalCount=result['meta']['total_count']
+    print("[*] There are possibly {} results.".format(totalCount))
+  else:
+    print("[!] No count result found, retrying")
+
+  if args.maximum is not None:
+    if args.maximum[0] < totalCount:
+      totalCount = args.maximum[0]
+
+  return totalCount
+
+
+
+# ---------------------------------------------------------------------
+# get the raw json and evaluate it until the ceiling is reached
+# only unique IPs are added. We can tell the number of values that are not duplicates or
+# empty by comparing that number to the offset which represents the total number pulled.
+
+def get_all(ceiling, requestParams):
+  file_header='Created,Modified,Type,Matched Via,Details,Hint,Id,MatchedID,Resource\n'
+  comma=','
+  end_line="\n"
+  requestParams['limit'] = 400  # a good sized chunk
+  requestParams['offset'] = 0   # reset to start over
+  csv_data=[]
+
+  while requestParams['offset'] < ceiling:
+    # write to file in chunks of calls to API made - comes last in this loop
+    response = requests.get(API_URL, params=requestParams)
+    print("[*] Getting chunk starting at {}".format(requestParams['offset']))
+    if str(response.status_code) != '200':
+      print("[!] Retrying at {} due to http status: {}".format(requestParams['offset'],response.status_code))
+    elif response.text is not None:
+      result=response.text.encode("utf-8")
+      result=json.loads(str(response.text))
+      num_items_returned=(len(result['objects']))
+      requestParams['offset']+=num_items_returned   # adjust offset based on number of items returnd
+
+      # if there were no results returned then for some reason there was a difference between the expected ceiling and
+      # the number of actual returned results.
+      if len(result['objects']) == 0:
+        print("[!] Valid response returned, but no additional results. Download complete.")
+        requestParams['offset'] = ceiling
+
+
+      # need to grab: created_ts, modified_ts, alerttype, keyword, details_url, hint, id, matched_id, resource_uri
+      # occasionally one of these field just doesn't show up. no idea why, but if it isn't there it is probably safe to assume it is blank.
+      # and if it wasn't blank, well I don't get the intel anyhow....
+      # yes, I could use json to csv, but there are nested objects in the json.
+      else:
+        for obj in result['objects']:
+          try:
+            if obj['created_ts'] is not None:
+              createdTS=obj['created_ts']
+            else:
+              createdTS=""
+          except:
+            createdTS=""
+
+          try:
+            if obj['modified_ts'] is not None:
+              modTS=obj['modified_ts']
+            else:
+              modTS=""
+          except:
+            modTS=""
+
+          try:
+            if obj['alerttype'] is not None:
+              alertType=obj['alerttype']
+            else:
+              alertType=""
+          except:
+            alertType=""
+
+          try:
+            if obj['keyword'] is not None:
+              keyWord=obj['keyword']
+            else:
+              keyWord=""
+          except:
+            keyWord=""
+
+          try:
+            if obj['details_url'] is not None:
+              detailsURL=obj['details_url']
+            else:
+              detailsURL=""
+          except:
+            detailsURL=""
+
+          try:
+            if obj['hint'] is not None:
+              hinT=obj['hint']
+            else:
+              hinT=""
+          except:
+            hinT=""
+
+          try:
+            if obj['id'] is not None:
+              Id=str(obj['id'])
+            else:
+              Id=""
+          except:
+            Id=""
+
+          try:
+            if obj['matched_id'] is not None:
+              matched_Id=str(obj['matched_id'])
+            else:
+              matched_Id=""
+          except:
+            matched_Id=""
+
+          try:
+            if obj['resource_uri'] is not None:
+              resourceUri=obj['resource_uri']
+            else:
+              resourceUri=""
+          except:
+            resourceUri=""
+
+          csv_data.append(createdTS+comma+modTS+comma+alertType+comma+keyWord+comma+detailsURL+comma+hinT+comma+Id+comma+matched_Id+comma+resourceUri+end_line)
+
+    else:
+      print("[!] None result at offset {}. Retrying at same offset".format(requestParams['offset']))
+
+
+  if args.maximum is not None:
+      csv_data=csv_data[0:ceiling]
+  with open(OUTFILE, 'a') as fH:
+    fH.write(file_header)
+    for item in csv_data:
+      fH.write(item)
+  fH.close()
+  print("[*] Complete. See file {} for results.".format(OUTFILE))
+
+
+if __name__ == "__main__":
+  get_all(numberOfIOCs(api_params), api_params)
