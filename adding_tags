@@ -1,0 +1,212 @@
+# George Nicol
+# python 2.7
+# August 2017
+# license: GNU GPLv3
+# Proof of Concept Code
+# version 1.0
+# Notes:
+#
+#
+#
+# Credentials required: enter them manually as: -c username apikey or use the
+# ability to process a .conf file for credentials. The credentials are in clear text however
+# which we strongly recommend against. The existence of yourcompany.conf in the same directory
+# as the executable is required. The YOURCOMPANY.conf file holds username and api key in clear
+# text, one per line as shown:
+# user@YOURCOMPANY.com
+# 1234567890abcdef
+
+# sample uses:
+# python2.7 ioc_tag.py -x -r this_is_a_red_tag -i badguy.ioc.org
+#       use credential file for authentication to add a tlp:RED tag to badguy.ioc.org
+# python2.7 ioc_tag.py -c username api_key -r this_is_a_red_tag -i badguy.ioc.org
+#       manually enter credentials for authentication to add a tlp:RED tag to badguy.ioc.org
+# python2.7 ioc_tag.py -x -w this_is_a_white_tag -i badguy.ioc.org
+#       use credential file for authentication to add a tlp:WHITE tag to badguy.ioc.org
+# python2.7 ioc_tag.py -c username apikey -w this_is_a_white_tag -i badguy.ioc.org
+#       manually enter credentials for authentication to add a tlp:wHITE tag to badguy.ioc.org
+#
+# you can add more than one tag. Tags are separated by spaces. You can add both red and white tags
+# python2.7 ioc_tag.py -x -w tag_1 tag_2 -r tag_3 tag_4 -i badguy.ioc.org
+
+# workflow overview
+# 1. get 'org_id'  and 'source_user_id' based on auth
+#           'org_id' is in v1 ['objects'][0]['owner_organization_id']
+#           'source_user_id' is in v1 ['objects'][0]['id']
+# 2. based on v2 "value" of badguy.ioc.org retrieve 'resource_uri' for said IOC
+# 3. create payload
+#           assign 'category' as 'user'
+#           assign 'name' as tag from args
+#           assign 'org_id' as from above
+#           assign 'sourece_user' as ''
+#           assign 'source_user_id' as from above
+#           assign 'tagger' as 'user'
+#           assign 'tlp' based on args (red/white)
+# 4. POST request to that 'resource_uri/tag/' using payload (acceptance shows 201)
+#       note: actual payload is {"tags":[{....}]} where each payload is a tag in a list of tags
+#             in retrospect I could have named this better I suppose
+
+
+import argparse
+import json
+import requests
+import sys
+import copy
+
+# ---------------------------------------------------------------------
+# some constants
+
+V1BASE="https://api.threatstream.com/api/v1"
+V2BASE="https://api.threatstream.com/api/v2"
+TAG = "/tag/"                       # part of path to retrieve IOCs
+USER="/user/"                       # acquire user id
+SUCCESS=['200','201','202']         # https status codes
+
+API_URL=''
+API_PARAMS= {
+    "username"  : "",
+    "api_key"   : ""}
+
+
+
+# ---------------------------------------------------------------------
+# parse dem args
+
+parser = argparse.ArgumentParser(description="add tag to IOC")
+credGroup=parser.add_mutually_exclusive_group(required=True)
+
+credGroup.add_argument('-x', action='store_true', help="use YOURCOMPANY.conf")
+credGroup.add_argument('-c', dest='creds', action='store', nargs=2, help="username apikey")
+parser.add_argument('-w', dest='white_tags', action='store', nargs="+",  help="white tag")
+parser.add_argument('-r', dest='red_tags', action='store', nargs="+", help="red tag")
+parser.add_argument('-i', dest = "ioc_value", action = "store", nargs = 1, required = True, help = "IOC in question")
+
+args, unknown = parser.parse_known_args()
+
+
+# ---------------------------------------------------------------------
+# set up credentials for use in auth and munge the args
+
+if args.x == True:
+  try:
+    with open('YOURCOMPANY.conf', 'r') as f:
+      conf=f.read()
+    conf=conf.split()
+    API_PARAMS['username']=conf[0].strip()
+    API_PARAMS['api_key']=conf[1].strip()
+  except:
+    print("[!] Problem with YOURCOMPANY.conf file.")
+    sys.exit()
+else:
+  API_PARAMS['username']=args.creds[0]
+  API_PARAMS['api_key']=args.creds[1]
+
+
+# ---------------------------------------------------------------------
+# query API about the user based on auth and return tuple of assorted
+# information used later in payload
+
+def getUserId(requestParams):
+  api_url=V1BASE+USER
+  response=requests.get(api_url,params=requestParams)
+  if response.text is not None:
+    result=response.text.encode("utf-8")
+    result=json.loads(str(result))
+    return (str(result['objects'][0]['organization']['id']),str(result['objects'][0]['id']))
+
+  return (None,None)
+
+
+
+# ---------------------------------------------------------------------
+# get list of resource_uri for value in question (there may be more than
+# one). Ultimately we will just attempt to slap the tags on all of them
+# and see what sticks.
+
+def getList(requestParams):
+  resource_list = []
+  api_url=V2BASE+'/intelligence/'
+  local_params = copy.deepcopy(requestParams)
+  local_params["value"] = args.ioc_value[0]
+  response = requests.get(api_url, params=local_params)
+  if str(response.status_code) not in SUCCESS:
+    print("[!] retrying at {} due to http status: {}".format(requestParams['offset'],response.status_code))
+  elif response.text is not None:
+    result=response.text.encode("utf-8")
+    result=json.loads(str(result))
+    for item in result['objects']:
+      resource_list.append(item['id'])
+
+  return resource_list
+
+
+
+# ---------------------------------------------------------------------
+# create payload
+
+def createPayloadList(org_id, source_id):
+  payload_list=[]
+
+  if args.white_tags is not None:
+    for tag in args.white_tags:
+      payload={}
+      payload['category']='user'
+      payload['name'] = tag
+      payload['org_id']=org_id
+      payload['source_user']=''
+      payload['source_user_id']=source_id
+      payload['tagger']='user'
+      payload['tlp']='white'
+      payload_list.append(payload)
+
+  if args.red_tags is not None:
+    for tag in args.red_tags:
+      payload={}
+      payload['category']='user'
+      payload['name'] = tag
+      payload['org_id']=org_id
+      payload['source_user']=''
+      payload['source_user_id']=source_id
+      payload['tagger']='user'
+      payload['tlp']='red'
+      payload_list.append(payload)
+
+  return payload_list
+
+
+# ---------------------------------------------------------------------
+# see workflow comment for description
+
+def masterFlow():
+
+  moveforward=True
+
+  org_id, source_user_id = getUserId(API_PARAMS)
+  resource_uri_list = getList(API_PARAMS)
+  if not org_id:
+    print("[!] http status: {} or bad authentication".format(response.status_code))
+    moveforward=False
+
+  if len(resource_uri_list) == 0:
+    print("[!] Valid response returned, but {} is not found.\nexiting".format(args.ioc_value[0]))
+    moveforward=False
+
+  for resource_uri in resource_uri_list:  # just the number
+    payloads = createPayloadList(org_id,source_user_id)
+    if len(payloads) == 0:
+      print("[!] No tags included.\nexiting")
+      moveforward=False
+
+    if moveforward == True:
+      api_url=V1BASE+'/intelligence/'+str(resource_uri)+TAG
+      tag_payload={}
+      tag_payload['tags']=payloads
+      response=requests.post(api_url, params=API_PARAMS, data=json.dumps(tag_payload), headers = { 'Content-Type' : 'application/json' })
+      if str(response.status_code) not in SUCCESS:
+        print("[!] http status: {}".format(response.status_code))
+      else:
+        print("uri: {0}, tags accepted, status: {1}".format(resource_uri, response.status_code))
+
+
+if __name__ == "__main__":
+  masterFlow()
